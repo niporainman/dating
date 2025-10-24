@@ -1,0 +1,112 @@
+<?php 
+include("../../minks1.php"); 
+$table_name = "blog";
+
+function extract_image_sources($html) {
+    $dom = new DOMDocument();
+    libxml_use_internal_errors(true); // Suppress HTML5 warnings
+    $dom->loadHTML($html);
+    libxml_clear_errors();
+
+    $image_paths = [];
+    foreach ($dom->getElementsByTagName('img') as $img) {
+        $src = $img->getAttribute('src');
+        if (strpos($src, "/site_img/") !== false) {
+            $image_paths[] = $_SERVER['DOCUMENT_ROOT'] . parse_url($src, PHP_URL_PATH);
+        }
+    }
+    return $image_paths;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $action = $_POST['action'] ?? '';
+    $heading = trim($_POST['heading'] ?? '');
+    $category = $_POST['category'] ?? '';
+    $preamble = trim($_POST['preamble'] ?? '');
+    $body = $_POST['body'] ?? '';
+    $featured = $_POST['featured'] ?? '';
+    $comments_allowed = $_POST['comments_allowed'] ?? '';
+    $date = $_POST['date'] ?? date('Y-m-d H:i:s');
+    $picture = $_POST['picture'] ?? '';
+    $new_picture = '';
+    $keywords = "$heading $preamble $body";
+
+    if (!empty($_FILES["fileField"]["name"])) {
+        $random_id = bin2hex(random_bytes(5));
+        $extension = pathinfo($_FILES["fileField"]["name"], PATHINFO_EXTENSION);
+        $upload_path = "../../site_img/$table_name/$random_id.$extension";
+
+        if (move_uploaded_file($_FILES['fileField']['tmp_name'], $upload_path)) {
+            $new_picture = "$random_id.$extension";
+        }
+    }
+
+    if ($action === 'save') {
+        $blog_id = bin2hex(random_bytes(5));
+        $final_picture = $new_picture ?: '';
+
+        $stmt = $con->prepare("INSERT INTO $table_name (blog_id, heading, category, preamble, body, picture, featured, date, keywords, comments_allowed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param('ssssssssss', $blog_id, $heading, $category, $preamble, $body, $final_picture, $featured, $date, $keywords, $comments_allowed);
+        $stmt->execute();
+        echo "Item successfully added.";
+    }
+
+    if ($action === 'edit') {
+        $id = (int)($_POST['id'] ?? 0);
+
+        // Fetch old body content from DB
+        $oldBody = '';
+        $result = $con->query("SELECT body FROM $table_name WHERE id = $id");
+        if ($row = $result->fetch_assoc()) {
+            $oldBody = $row['body'];
+        }
+
+        // Get old and new image srcs
+        $old_images = extract_image_sources($oldBody);
+        $new_images = extract_image_sources($body);
+
+        // Delete images that were removed in the updated content
+        $deleted_images = array_diff($old_images, $new_images);
+        foreach ($deleted_images as $imgPath) {
+            if (file_exists($imgPath)) unlink($imgPath);
+        }
+
+        // Replace featured image if a new one was uploaded
+        $final_picture = $new_picture ?: $picture;
+        if ($new_picture && !empty($picture)) {
+            @unlink("../../site_img/$table_name/$picture");
+        }
+
+        $stmt = $con->prepare("UPDATE $table_name SET heading = ?, category = ?, preamble = ?, body = ?, picture = ?, featured = ?, date = ?, keywords = ?, comments_allowed = ? WHERE id = ?");
+        $stmt->bind_param('sssssssssi', $heading, $category, $preamble, $body, $final_picture, $featured, $date, $keywords, $comments_allowed, $id);
+        $stmt->execute();
+        echo "Item successfully updated.";
+    }
+
+    if ($action === 'delete') {
+        $id = (int)($_POST['id'] ?? 0);
+        $picture = $_POST['picture'] ?? '';
+
+        // Get body content to find and delete embedded images
+        $result = $con->query("SELECT body FROM $table_name WHERE id = $id");
+        if ($row = $result->fetch_assoc()) {
+            $embedded_images = extract_image_sources($row['body']);
+            foreach ($embedded_images as $imgPath) {
+                if (file_exists($imgPath)) unlink($imgPath);
+            }
+        }
+
+        // Delete featured image
+        if (!empty($picture)) {
+            @unlink("../../site_img/$table_name/$picture");
+        }
+
+        // Delete record from DB
+        $stmt = $con->prepare("DELETE FROM $table_name WHERE id = ?");
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        echo "Item successfully deleted.";
+    }
+}
+?>
